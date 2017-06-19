@@ -1,0 +1,323 @@
+#!/bin/bash -v
+########################################################################
+# see also:
+# <http://wiki.cpantesters.org/wiki/SmokeTesting>
+########################################################################
+
+cd $(dirname $0);
+
+# few basic configs:
+
+export build='/var/tmp/CPAN';
+
+export cpan='/var/lib/CPAN';
+export local="$cpan/sources/";
+
+export remote='http://mirror.uic.edu/CPAN/';
+
+export myname='Steven Lembark';
+export email='lembark@wrkhors.com';
+export passwd='password/secret';
+
+export HOME="$cpan";
+
+export dirs=(
+    /opt/bin
+    ~/Minicpan
+    ~/.cpantesters
+    ~/.cpanreporter
+);
+
+export PATH="/opt/perl5/bin:${PATH##*/opt/perl5/bin:}";
+
+if [ -d /opt/perl5/lib ]
+then
+    export lib=$(ls -d /opt/perl5/lib/5* | tail -1);
+    export site=$(ls -d /opt/perl5/lib/site_perl/5* | tail -1);
+
+    export global="$lib/CPAN/Config.pm";
+fi
+
+########################################################################
+# blow up early if these are going to fail.
+
+# put anything permenenant on stable storage.
+# do not use /home!
+
+echo -e "\n\nVerify directories: ${dirs[*]}\n\n";
+
+for i in ${dirs[@]}
+do
+    echo -n "\nDirectory '$i'... ";
+
+    if [ -d $i ] || mkdir -v $i
+    then
+        echo "exists:";
+        ls -ld $i;
+    else
+        echo -e "\nFailed: aborting installation.";
+        exit -1;
+    fi
+done
+
+########################################################################
+# install & setup perl.
+########################################################################
+
+(
+    cd /var/tmp;
+    gzip -dc < perl.tar.gz | tar xf -;
+    cd perl*;
+
+    jobs=$(grep '^processor' /proc/cpuinfo | wc -l);
+
+    CFLAGS='-O2 -pipe -march=native';
+
+    ./Configure                 \
+        -de                     \
+        -Dprefix=/opt/perl5     \
+        -Dman1dir='none'        \
+        -Dman3dir='none'        \
+        -Doptimize="$CFLAGS"    \
+    &&
+    TEST_JOBS=$jobs /usr/bin/make -j$jobs all test_harness install;
+) ||
+exit -2;
+
+# done with the build diretory, save some space
+# for the CPAN updates.
+
+rm -rf /var/tmp/perl*;
+
+# put the newly installed perl at the top of our path.
+# first sanity check: can we find h2ph?
+
+export PATH=/opt/perl5/bin:$PATH;
+
+h2ph -r -l /usr/include;
+
+# simplest way to get the config moved into the shared volume
+# is let CPAN put it in a home directory and then mv it into
+# place under /opt/perl5.
+
+/opt/perl5/bin/perl -MCPAN -e 'shell'<<CPAN;
+yes
+o conf cpan_home                $cpan
+o conf histfile                 $cpan/histfile
+o conf prefs_dir                $cpan/prefs
+o conf build_dir                $build
+o conf keep_source_where        $local
+o conf auto_commit              yes
+o conf build_dir_reuse          yes
+o conf check_sigs               yes
+o conf inhibit_startup_message  yes
+o conf halt_on_failure          no
+o conf build_cache              1
+o conf index_expire             1
+o conf commit
+CPAN
+
+global="$lib/CPAN/Config.pm";
+
+# start by snagging any upgrades for CPAN itself.
+#
+# install modules useful for CPAN and testing.
+# this could be a bundle but separating out the
+# cpan invocations provides some isolation in
+# case of errors.
+#
+# note that piping in "yes" only works if the
+# modules only require yes/no input.
+
+(
+    export CPAN_RUN_SHELL_TEST_WITHOUT_EXPECT=1;
+
+    yes '' | perl -MCPAN -e 'install CPAN';
+);
+
+########################################################################
+# install modules require/useful for smoke, minicpan
+########################################################################
+
+(
+    export CPAN_RUN_SHELL_TEST_WITHOUT_EXPECT=1;
+
+    yes '' | perl -MCPAN -e shell <<CPAN;
+    install Term::ReadLine::Perl
+
+CPAN
+)
+
+# rest of these only ask for yes/no on things like network
+# connections.
+# YAML::Syck required for minismokebox.
+
+modules=(
+    YAML::XS
+    YAML::Syck
+    JSON::XS
+    DBD::SQLite
+    CPAN::SQLite
+    IO::Socket::SSL
+    Net::SSL
+    Net::SSLeay
+    HTTP::Date
+    Test::Most
+    Metabase::Resource
+    Module::Version
+    Module::Version Bundle::CPAN
+    Log::Log4perl
+    Bundle::CPAN
+    Test::RequiresInternet
+    WWW::RobotRules
+    LWP::UserAgent
+    WWW::Mechanize
+    CPAN::Mini
+    CPAN::Reporter
+    CPAN::Testers
+    CPAN::Reporter::Smoker
+    Bundle::CPANReporter2
+    Bundle::CPAN::Reporter::Smoker::Tests
+    App::SmokeBox::Mini
+    App::cpanminus::reporter
+    minismokebox
+);
+
+for i in ${modules[@]}
+do
+    yes 'y' | perl -MCPAN -e "install $i";
+done
+
+(
+    # generate id_file used in transport config for reporter:
+    #
+    # $ metabase-profile ;
+    # Enter full name:   Steven Lembark
+    # Enter email address:   lembark@wrkhors.com
+    # Enter password/secret:   password/secret
+    # Writing profile to 'metabase_id.json'
+
+    cp ./docker-smoker ~/.cpantesters;
+
+    cd ~/.cpantesters;
+
+    metabase-profile <<END;
+$myname
+$email
+$passwd
+END
+    chmod 0400 metabase_id.json;
+)
+
+# now that Reporter is installed, configure it:
+#
+# Generate test reports if CPAN::Reporter is installed (yes/no)? [no] yes
+# Would you like me configure CPAN::Reporter now? [yes] <enter>
+# email_from? [] example@example.com
+# edit_report? [default:ask/no pass/na:no] <enter>
+# send_report? [default:ask/yes pass/na:yes] <enter>
+# transport? [Metabase uri https://metabase.cpantesters.org/api/v1/ id_file metabase_id.json] <enter>
+# Would you like to run 'metabase-profile' now to create '/root/.cpanreporter/metabase_id.json'? [y] <enter>
+
+cpan <<CPAN;
+o conf init test_report
+yes
+yes
+$email
+no
+yes
+
+
+CPAN
+
+cat <<END >> ~/.cpanreporter/config.ini;
+transport = Metabase uri https://metabase.cpantesters.org/api/v1/ id_file ~/.cpantesters/metabase_id.json
+END
+
+# see also:
+# https://metacpan.org/release/App-cpanminus-reporter
+# this uses reasonable defaults taken from existing 
+# config, just accept the defaults.
+
+yes '' | cpanm-reporter --setup;
+
+# add the local path first, then remote for
+# testing -- might be worth using just $local.
+
+perl -MCPAN -e 'shell'<<CPAN;
+o conf urllist $local $remote
+CPAN
+
+# configure minicpan.
+# add shell scripts for execution w/in docker.
+
+mkdir ~/Minicpan;
+cat <<CONFIG > ~/Minicpan/minicpan.conf;
+remote:  $remote
+local:   $local
+CONFIG
+
+cat<<BASH > ~/.bashrc;
+export HOME='$cpan';
+BASH
+
+cat<<CONFIG > ~/Minicpan/minicpanrc;
+export local='$local';
+export remote='$remote';
+CONFIG
+
+# put perly exec's onto the stock path.
+# add a stock wrapper for minicpan.
+
+cd /opt/bin/;
+ln -fs ../perl5/bin/* .;
+
+cat<<RUN > run-minicpan;
+#!/bin/bash
+
+CPAN_MINI_CONFIG=~/Minicpan/minicpan.conf exec /opt/bin/minicpan;
+RUN
+
+########################################################################
+# install local copy of cpan.
+# cpan upgrade tests reporter.
+########################################################################
+
+run-minicpan;
+
+# at this point we should be sending reports.
+# upgrade the perl core modules to check.
+#
+# Test Summary Report
+# -------------------
+# t/xe04support_by_pp.t     (Wstat: 65280 Tests: 0 Failed: 0)
+#   Non-zero exit status: 255
+#   Parse errors: Bad plan.  You planned 3 tests but ran 0.
+# t/xe05_indent_length.t    (Wstat: 65280 Tests: 0 Failed: 0)
+#   Non-zero exit status: 255
+#   Parse errors: Bad plan.  You planned 7 tests but ran 0.
+# t/xe10_bignum.t           (Wstat: 65280 Tests: 0 Failed: 0)
+#   Non-zero exit status: 255
+#   Parse errors: Bad plan.  You planned 6 tests but ran 0.
+# t/xe12_boolean.t          (Wstat: 65280 Tests: 0 Failed: 0)
+#   Non-zero exit status: 255
+#   Parse errors: Bad plan.  You planned 4 tests but ran 0.
+# t/xe19_xs_and_suportbypp.t (Wstat: 65280 Tests: 0 Failed: 0)
+#   Non-zero exit status: 255
+#   Parse errors: Bad plan.  You planned 2 tests but ran 0.
+# Files=58, Tests=3810, 17 wallclock secs ( 1.22 usr  0.24 sys + 14.43 cusr  1.19 csys = 17.08 CPU)
+# Result: FAIL
+# Failed 5/58 test programs. 0/3810 subtests failed.
+# make: *** [Makefile:856: test_dynamic] Error 255
+# (/usr/bin/make test exited with 512)
+#!CPAN::Reporter: Test result is 'fail', One or more tests failed.
+#!CPAN::Reporter: preparing a CPAN Testers report for JSON-2.61
+#!CPAN::Reporter: sending test report with 'fail' via Metabase
+#   MAKAMAKA/JSON-2.61.tar.gz
+#   /usr/bin/make test -- NOT OK
+# //hint// to see the cpan-testers results for installing this module, try:
+#   reports MAKAMAKA/JSON-2.61.tar.gz
+
+yes 'y' | perl -MCPAN -e 'upgrade';
+
+exit 0;

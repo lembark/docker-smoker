@@ -1,0 +1,67 @@
+#!/bin/env perl
+########################################################################
+# housekeeping
+########################################################################
+
+package Docker::Reaper  v0.1.0;
+use v5.24;
+
+########################################################################
+# parent reaps zombies via wait.
+# child executes smoker.
+########################################################################
+
+sub reap
+{
+    my $child       = shift;
+    my @sigz
+    = qw
+    (
+        HUP
+        INT
+        ALRM
+        QUIT
+        USR1
+        USR2
+        PIPE
+        TERM
+        TSTP
+        TTIN
+        TTOU
+        WINCH
+    );
+
+    @SIG{ @sigz }   = ( sub { kill $_[0], $child } ) x @sigz;
+
+    for(;;)
+    {
+        my $pid = wait;
+
+        $pid != -1
+        or die "Lost child pid ($child)";
+
+        $pid != $child
+        and next;
+
+        return $?
+    }
+}
+
+for my $child 
+(
+    $ENV{ DOCKER_REAPER_NOFORK } 
+    ? 0 
+    : fork
+)
+{
+    $child
+    // die "Phorkafobia: $!";
+
+    $child
+    and exit reap $child;
+
+    require CPAN::Reporter::Smoker;
+    CPAN::Reporter::Smoker::start();
+}
+
+__END__

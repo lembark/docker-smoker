@@ -1,0 +1,67 @@
+#!/bin/bash -v
+
+cd $(dirname $0);
+. ./smokerc;
+
+tar=${1:-$(ls /download/perl-*.tar.gz|tail -1)};
+image=${2:-$default_image};
+
+name=$(basename $tar '.tar.gz');
+
+echo "Maintaining perl: '$name'.";
+
+if $docker image list | grep $image
+then
+    echo "Running image: '$image'.";
+else
+    echo "Error: Non-existant image: '$image'.";
+    exit -2;
+fi
+
+tmp="var-tmp-$$";
+
+vols=(
+    "-v $tmp:/var/tmp"
+    "-v $name:/opt"
+    "-v /var/lib/CPAN:/var/lib/CPAN"
+    "-v /scratch:/scratch"
+);
+
+echo "Volumes mapped: ${vols[*]}";
+
+remove_vol()
+{
+    echo "Removing: '$1' (may fail due to lack of a volume)";
+    $docker volume rm $1;
+}
+
+cname="maint-$name";
+
+remove_vol $tmp;
+
+$docker volume create   \
+    --driver=local      \
+    --opt type=tmpfs    \
+    --opt device=tmpfs  \
+    --opt o=size=320M   \
+    $tmp                \
+&&
+$docker run             \
+    -a stdout           \
+    -a stderr           \
+    -it                 \
+    --rm                \
+    --name="$cname"     \
+    ${vols[@]}          \
+    $image              \
+    "bash --login $cmd" \
+;
+
+remove_vol $tmp;
+
+# guarantee the tmp volume gets cleaned up.
+
+wait;
+$docker volume rm $tmp;
+
+exit 0;

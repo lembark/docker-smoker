@@ -1,0 +1,35 @@
+# configure environment for smoke tests
+
+docker='/usr/bin/docker';
+repo='jekyll:5000';
+
+wrkhors="$repo/workhorse";
+smoke="$repo/smoketest";
+
+default_image="$smoke/gentoo-stage3-amd64";
+default_tball=$(ls /download/perl-*.tar.gz|tail -1);
+
+# tarball determines perl version number for volume.
+# image is underlying O/S image for building, running perl.
+
+tball=${1:-$default_tball};
+image=${2:-$default_image};
+
+perl=$(basename $tball '.tar.gz');
+
+# O/S images built via scripts, used for minicpan updates and also
+# for the smoketest runs.
+
+# config options for minicpan, smoke testing.
+
+build='/var/tmp/CPAN';
+cpan='/var/lib/CPAN';
+
+remote='http://mirror.uic.edu/CPAN/';
+local="$cpan/sources/";
+
+base=$(basename $0);
+cname="$base-$(basename $image)-$perl";
+log="$cpan/$cname.out";
+
+run="$docker run -a stdout -a stderr --name=$cname";

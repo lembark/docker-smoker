@@ -1,0 +1,75 @@
+#!/bin/bash -v
+########################################################################
+# start of build
+########################################################################
+
+cd $(dirname $0);
+source ./smokerc;
+
+if [ -e "$tball" ]
+then
+    echo "Building perl from: '$tball'.";
+else
+    echo "Error: Non-existant perl tarball: '$tball'.";
+    exit -1;
+fi
+
+if $docker image list | grep $image
+then
+    echo "Building perl on: '$image'.";
+else
+    echo "Error: Non-existant image: '$image'.";
+    exit -2;
+fi
+
+log="build-$perl.out.gz";
+tmp="var-tmp-$$";
+
+# using:
+#    '--tmpfs /var/tmp:rw,size=320M,mode=1777'
+# creates volume w/non-exec mode.
+
+vols=(
+    "-v $tmp:/var/tmp"
+    "-v $tball:/var/tmp/perl.tar.gz"
+    "-v $PWD/perl-build:/var/tmp/perl-build"
+    "-v $perl:/opt"
+    "-v /var/lib/CPAN:/var/lib/CPAN"
+);
+
+echo "Build output in: '$log'";
+echo "Volumes: ${vols[@]}";
+
+if [ -t 0 ]
+then
+    output="tee /dev/tty | gzip -9v > $log";
+else
+    output="gzip -9v > $log";
+fi
+
+(
+    cont="build-$perl";
+
+    $docker volume create   \
+        --driver=local      \
+        --opt type=tmpfs    \
+        --opt device=tmpfs  \
+        --opt o=size=320M   \
+        $tmp                &&
+    $docker volume create   \
+        --driver=local      \
+        $perl               &&
+    $run                    \
+        -it                 \
+        ${vols[@]}          \
+        $image              \
+        /var/tmp/perl-build \
+    | eval $output;
+);
+
+exit 0;
+
+########################################################################
+# end of build
+########################################################################
+
